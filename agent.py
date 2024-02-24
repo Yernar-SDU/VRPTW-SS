@@ -6,7 +6,8 @@ import math
 import matplotlib.pyplot as plt
 from torch.nn import DataParallel
 import numpy as np
-
+import sys
+import copy
 
 def move_to(var, device):
     if isinstance(var, dict):
@@ -26,16 +27,10 @@ device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cp
 class State(object):
 
     def __init__(self, mask, cur_loc, cur_load, demand):
-        # self.batch_size = batch_size
-        # self.n_nodes = n_nodes
         self.demand = demand
         self.mask = mask
         self.cur_load = cur_load.to(device)
         self.cur_loc = cur_loc.to(device)
-        
-        # self.mask_vehicle = torch.ones(self.batch_size, self.vehicle_num)
-        # self.cur_loads = torch.full((self.batch_size, self.vehicle_num), 25)
-        # self.cur_locs = torch.full((self.batch_size, self.vehicle_num), 0).to(device)
 
     def __getitem__(self, item):
         return {
@@ -46,13 +41,20 @@ class State(object):
         }
 
     def update(self, mask, cur_loc, cur_load, demand):
-        # self.current_node = current_node[:, None]
         self.demand = demand
         self.mask = mask
         self.cur_load = cur_load.to(device)
         self.cur_loc = cur_loc.to(device)
         
 
+    def update_mask(self ,idx):
+        
+        for batch in range(self.mask.shape[0]):
+            if idx[batch] != 0:
+                self.mask[batch, idx] = 1
+                
+            if torch.all(self.mask[batch]==1):
+                self.mask[batch, 0] = 0
 
 def clip_grad_norms(param_groups, max_norm=math.inf):
     """
@@ -76,12 +78,12 @@ def clip_grad_norms(param_groups, max_norm=math.inf):
 
 class A2CAgent(object):
 
-    def __init__(self, model, args, env, dataGen):
+    def __init__(self, model, args, env, dataGen, test_data):
         self.model = model
         self.args = args
         self.env = env
         self.dataGen = dataGen
-        self.test_data = dataGen.get_train_next()
+        self.test_data = test_data
         # Initialize optimizer
         self.optimizer = optim.Adam([{'params': model.parameters(), 'lr': args['actor_net_lr']}])
         # Initialize learning rate scheduler, decay by lr_decay once per epoch!
@@ -98,13 +100,16 @@ class A2CAgent(object):
 
         start_time = time.time()
         reward_epoch = torch.zeros(args['n_epochs'])
+        train_rewards = []
         for epoch in range(args['n_epochs']):
             # [batch_size, n_nodes, 3]: entire epoch train data
             train_data = self.dataGen.get_train_next()
+            
             # compute baseline value for the entire epoch
             baseline_data = baseline.wrap_dataset(train_data)
             # compute for each batch the rollout
             # train each batch
+            # train_rewards = []
             for batch in range(args['n_batch']):
                 print("batch: ", batch)
                 print("epoch: ", epoch)
@@ -112,21 +117,28 @@ class A2CAgent(object):
                 data, bl_val = baseline.unwrap_batch(baseline_data[batch])
                 bl_val = move_to(bl_val, device) if bl_val is not None else None
                 R, logs, actions = self.rollout_train(data)
+                # train_rewards.append(R.mean())
                 # Calculate loss
                 adv = (R - bl_val).to(device)
+                # print('R', R)
+                # print('bl_val', bl_val)
                 loss = (adv * logs).mean()
+                # print('loss', loss)
                 losses.append(loss)
                 # Perform backward pass and optimization step
                 self.optimizer.zero_grad()
                 loss.backward()
+                # print('asdf', self.model.state_dict())
                 # Clip gradient norms and get (clipped) gradient norms for logging
                 grad_norms = clip_grad_norms(self.optimizer.param_groups, args['max_grad_norm'])
                 self.optimizer.step()
             epoch_duration = time.time() - start_time
             print("Finished epoch {}, took {} s".format(epoch, time.strftime('%H:%M:%S', time.gmtime(epoch_duration))))
-            avg_reward = torch.mean(self.rollout_test(self.test_data[0], self.model).to(torch.float32))
-            print("average test reward: ", avg_reward)
-            reward_epoch[epoch] = avg_reward
+            
+            # avg_reward = torch.mean(self.rollout_test(self.test_data[0], self.model).to(torch.float32))
+            # print("average test reward: ", avg_reward)
+            # reward_epoch[epoch] = avg_reward
+            
             
             if (epoch % args['save_interval'] == 0) or epoch == args['n_epochs'] - 1:
                 print('Saving model and state...')
@@ -140,8 +152,24 @@ class A2CAgent(object):
                     },
                     os.path.join(args['save_path'], 'epoch-{}.pt'.format(epoch))
                 )
-            if avg_reward < best_model:
-                best_model = avg_reward
+            # if avg_reward < best_model:
+            #     best_model = avg_reward
+            #     torch.save(
+            #         {
+            #             'model': self.model.state_dict(),
+            #             'optimizer': self.optimizer.state_dict(),
+            #             'rng_state': torch.get_rng_state(),
+            #             'cuda_rng_state': torch.cuda.get_rng_state_all(),
+            #             'baseline': baseline.state_dict()
+            #         },
+            #         os.path.join(args['save_path'], 'best_model.pt')
+                # )
+                
+            test_success, train_reward = baseline.epoch_callback(self.model, epoch, self.test_data)
+            train_rewards.append(train_reward)
+            if test_success:
+                # self.test_data = self.dataGen.get_test_next()
+                baseline._update_model(model, epoch, self.test_data)
                 torch.save(
                     {
                         'model': self.model.state_dict(),
@@ -151,17 +179,23 @@ class A2CAgent(object):
                         'baseline': baseline.state_dict()
                     },
                     os.path.join(args['save_path'], 'best_model.pt')
-                )
-
-            baseline.epoch_callback(self.model, epoch)
-            test_rewards.append(avg_reward.cpu().numpy())
-            np.savetxt(args['save_path']+"/test_rewards.txt", test_rewards)
+                    )
+            # test_rewards.append(avg_reward.cpu().numpy())
+            np.savetxt(args['save_path']+"/test_rewards.txt", train_rewards)
             # np.savetxt("trained_models/losses.txt", losses)
             # lr_scheduler should be called at end of epoch
-            self.lr_scheduler.step()
+            # self.lr_scheduler.step()
             # ratio = reward_epoch/total_demand_epoch
+            
+            plt.plot(torch.arange(len(train_rewards)), train_rewards)
+            plt.savefig(os.path.join('plots', f'train_rewards-{self.env.n_nodes}.png'))
+            
+            
             plt.plot(torch.arange(len(test_rewards)), test_rewards)
             plt.savefig(os.path.join('plots', f'test_rewards-{self.env.n_nodes}.png'))
+            
+            
+            
         plt.plot(torch.arange(args['n_epochs']).numpy(), reward_epoch.cpu().numpy())
         plt.savefig(os.path.join('plots', f'reward_ratio-{self.env.n_nodes}.png'))
 
@@ -170,20 +204,22 @@ class A2CAgent(object):
         model = self.model
         model.train()
         set_decode_type(self.model, "sampling")
+        data = copy.deepcopy(data)
 
-
+        print('train data', data.shape)
         data, masks, cur_locs, cur_loads, demand = env.reset(data)
+        
         data = move_to(data, device)
         
         vehicle_states = []
         
-
         for vehicle in range(env.vehicle_num):
             state = State(masks[:, vehicle], cur_locs[:, vehicle], 
                           cur_loads[:, vehicle], demand)
             vehicle_states.append(state) 
         
         embeddings, fixed = model.embed(data)
+        
         
         # print("{}: {}".format("initial state", state[0]))
         # print("{}: {}".format("mask", mask[0]))
@@ -194,13 +230,21 @@ class A2CAgent(object):
         while time_step < self.args['decode_len']:
             indexes = []
             # indexes = move_to(indexes, device)
-            print('time_step', time_step)
+            # print('time_step', time_step)
             for vehicle in range(env.vehicle_num):
-            
+                # print('mask4', vehicle_states[vehicle].mask)
                 log_p, idx = model(embeddings, fixed, vehicle_states[vehicle])
                 logs.append(log_p[:, 0, :])
+                # print('idx', idx)
                 indexes.append(idx.cpu())
+                # print('idxese', indexes)
                 actions.append(idx)
+                
+                for vehicle in range(env.vehicle_num):
+                    vehicle_states[vehicle].update_mask(idx)
+                
+                
+                
                 
             time_step += 1
                 
@@ -211,7 +255,7 @@ class A2CAgent(object):
             data = move_to(data, device)
             for vehicle in range(env.vehicle_num):    
                 vehicle_states[vehicle].update(mask[:, vehicle], cur_locs[:, vehicle], cur_loads[:, vehicle], demand)
-            embeddings, fixed = model.embed(data)
+            # embeddings, fixed = model.embed(data)
              
         # print("{}: {}".format("state update", state[0]))
         # print("{}: {}".format("mask", mask[0]))
@@ -231,7 +275,7 @@ class A2CAgent(object):
         model.eval()
         set_decode_type(self.model, "greedy")
         
-        print('data', data_o.shape)
+        print('test data', data_o.shape)
         data, masks, cur_locs, cur_loads, demand = env.reset(data_o)
         data = move_to(data, device)
         vehicle_states = []
@@ -242,7 +286,6 @@ class A2CAgent(object):
                           cur_loads[:, vehicle], demand)
             vehicle_states.append(state) 
         
-       
         embeddings, fixed = model.embed(data)
         # print('kkkk', data[:, :, :3].shape)
         # print('koko', mask.shape)
@@ -255,16 +298,20 @@ class A2CAgent(object):
             
             indexes = []
             # indexes = move_to(indexes, device)
-            print('time_step', time_step)
+            # print('time_step', time_step)
             for vehicle in range(env.vehicle_num):
                 # print('vehicle', vehicle)
                 # print('vehicle_state', vehicle_states[vehicle])
                 # print('vehicle load', vehicle_states[vehicle].cur_load.shape)
+                
+                
                 log_p, idx = model(embeddings, fixed, vehicle_states[vehicle])
-                # print('vehicle_state', vehicle_states[vehicle].cur_load.shape)
-                # print('why', idx)
-                # print('is', idx[0])
+                # print('idx', idx)
                 indexes.append(idx.cpu())
+                # print('idxese', indexes)
+                for vehicle in range(env.vehicle_num):
+                    vehicle_states[vehicle].update_mask(idx)
+                
                 # torch.cat((indexes, idx.unsqueeze(0)), dim=0)
                 
                 # print(time_step, " time step")
@@ -282,10 +329,12 @@ class A2CAgent(object):
             data = move_to(data, device)
             for vehicle in range(env.vehicle_num):    
                 vehicle_states[vehicle].update(mask[:, vehicle], cur_locs[:, vehicle], cur_loads[:, vehicle], demand)
-            embeddings, fixed = model.embed(data)
+            # embeddings, fixed = model.embed(data)
             
             
             
-        R = torch.mean((env.R).to(device))
+        R = torch.mean(env.R).to(device)
             
         return R
+    
+        

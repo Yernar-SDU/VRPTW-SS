@@ -98,6 +98,7 @@ class AttentionModel(nn.Module):
     def embed(self, static):
         # encoder
         embeddings, _ = self.embedder(self._init_embed(static))
+        # print('embed', embeddings.shape)
         fixed = self._precompute(embeddings)
         return embeddings, fixed
 
@@ -172,8 +173,8 @@ class AttentionModel(nn.Module):
         # print('mask.shape', mask.shape)
 
         # From the logits compute the probabilities by clipping, masking and softmax
-        print('logists', logits.shape)
-        print('mask', mask.shape)
+        # print('logists', logits.shape)
+        # print('mask', mask.shape)
         
         if self.tanh_clipping > 0:
             logits = torch.tanh(logits) * self.tanh_clipping

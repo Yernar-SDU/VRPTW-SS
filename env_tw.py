@@ -246,8 +246,10 @@ class Env(object):
         estimated_time = self.dist_mat[torch.arange(self.batch_size)[:, None, None], self.cur_locs, new_locs] / self.speed
         # print('cur_locs', self.cur_locs)
         # print('new_locs', new_locs)
-        # print('estimated_time', estimated_time)
         
+        print('estimated_time', estimated_time)
+        
+        sys.exit()        
         self.cur_time += estimated_time
         # print('new_locs', new_locs)
         #subtracting demand from served customers

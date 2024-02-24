@@ -1,13 +1,13 @@
 from agent import A2CAgent
 from attention_model import AttentionModel
-from env_tw import DataGenerator, Env
+from env_tw_2 import DataGenerator, Env
 from baseline import RolloutBaseline as Baseline
 import pandas as pd
 import torch
 args = {
-    'n_epochs': 200,
-    'n_batch': 20,
-    'batch_size': 256,
+    'n_epochs': 10,
+    'n_batch': 1,
+    'batch_size': 3,
     'n_nodes': 20,
     'initial_demand_size': 1,
     'max_load': 250,
@@ -16,7 +16,7 @@ args = {
     'data_dir': 'datasets',
     'log_dir': 'logs',
     'save_path': 'saved_models_20',
-    'decode_len': 50,   
+    'decode_len': 200,   
     'actor_net_lr': 0.1,
     'lr_decay': 0.01,
     'max_grad_norm': 2.0,
@@ -27,8 +27,8 @@ args = {
     'vehicle_num': 2,
     'early_coef': 0.1,
     'late_coef': 0.5,
-    'val_size': 256,
-    'test_b_size': 4
+    'val_size': 3,
+    'test_b_size': 10
 }
 
 
@@ -48,23 +48,6 @@ agent.train_epochs(baseline)
 
 # data_test = torch.load('testing_data.pth')
 # print(agent.rollout_test(data_test, model))
-
-# import os
-# import pickle
-
-# from lib.utils.io_utils import (
-#     read_tsplib_cvrptw,
-#     normalize_instance,
-#     to_rp_instance,
-# )
-
-# LPATH = "./data/solomon_txt/"
-# DATA_SPATH = "./data/solomon_prep.pkl"
-# GROUPS = ["r", "c", "rc"]
-# TYPES = ["1", "2"]
-
-
-
 
 
 

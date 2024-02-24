@@ -312,16 +312,8 @@ class A2CAgent(object):
                 for vehicle in range(env.vehicle_num):
                     vehicle_states[vehicle].update_mask(idx)
                 
-                # torch.cat((indexes, idx.unsqueeze(0)), dim=0)
-                
-                # print(time_step, " time step")
-                
-            # print('indexes', indexes)
-            # print("{}: {}".format("state update", state[0]))
-            # print("cur_time", env.cur_time[0])
-            # print("time_demand: ", env.time_demand[0])
-            # print("R: ", env.reward[0])
-            time_step += 1
+
+                time_step += 1
             # indexes = torch.tensor(indexes)
             data, mask, cur_locs, cur_loads, demand, finished = env.step(indexes)
             if finished:
@@ -330,6 +322,8 @@ class A2CAgent(object):
             for vehicle in range(env.vehicle_num):    
                 vehicle_states[vehicle].update(mask[:, vehicle], cur_locs[:, vehicle], cur_loads[:, vehicle], demand)
             # embeddings, fixed = model.embed(data)
+            if (time_step == 3):
+                sys.exit()                 
             
             
             

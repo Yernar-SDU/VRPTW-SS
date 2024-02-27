@@ -5,12 +5,12 @@ from baseline import RolloutBaseline as Baseline
 import pandas as pd
 import torch
 args = {
-    'n_epochs': 10,
-    'n_batch': 1,
-    'batch_size': 3,
+    'n_epochs': 100,
+    'n_batch': 20,
+    'batch_size': 4,
     'n_nodes': 20,
     'initial_demand_size': 1,
-    'max_load': 250,
+    'max_load': 50,
     'speed': 1,
     'lambda': 1,
     'data_dir': 'datasets',
@@ -18,7 +18,7 @@ args = {
     'save_path': 'saved_models_20',
     'decode_len': 200,   
     'actor_net_lr': 0.1,
-    'lr_decay': 0.01,
+    'lr_decay': 0.0001,
     'max_grad_norm': 2.0,
     'save_interval': 1,
     'bl_alpha': 0.05,
@@ -27,8 +27,8 @@ args = {
     'vehicle_num': 2,
     'early_coef': 0.1,
     'late_coef': 0.5,
-    'val_size': 3,
-    'test_b_size': 10
+    'val_size': 4,
+    'test_b_size': 4
 }
 
 

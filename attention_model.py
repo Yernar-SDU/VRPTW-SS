@@ -6,7 +6,8 @@ from torch.nn import DataParallel
 
 from graph_encoder import GraphAttentionEncoder
 
-device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+device = torch.device(
+    "cuda") if torch.cuda.is_available() else torch.device("cpu")
 
 
 def set_decode_type(model, decode_type):
@@ -68,7 +69,7 @@ class AttentionModel(nn.Module):
         self.checkpoint_encoder = checkpoint_encoder
         self.shrink_size = shrink_size
 
-        step_context_dim = embedding_dim + 1  # Embedding of data + demand
+        step_context_dim = embedding_dim + 2  # Embedding of data + demand
         node_dim = 5  # demand, x, y, early_time, late_time
 
         # Learned input symbols for first action
@@ -86,14 +87,18 @@ class AttentionModel(nn.Module):
 
         # For each node we compute (glimpse key, glimpse value, logit key) so 3 * embedding_dim
         # Projects node embeddings beforehand
-        self.project_node_embeddings = nn.Linear(embedding_dim, 3 * embedding_dim, bias=False).to(device)
+        self.project_node_embeddings = nn.Linear(
+            embedding_dim, 3 * embedding_dim, bias=False).to(device)
         # Projects graph embedding
-        self.project_fixed_context = nn.Linear(embedding_dim, embedding_dim, bias=False).to(device)
-        self.project_step_context = nn.Linear(step_context_dim, embedding_dim, bias=False).to(device)
+        self.project_fixed_context = nn.Linear(
+            embedding_dim, embedding_dim, bias=False).to(device)
+        self.project_step_context = nn.Linear(
+            step_context_dim, embedding_dim, bias=False).to(device)
         self.project_dist = nn.Linear(n_nodes, embedding_dim, bias=False)
         assert embedding_dim % n_heads == 0
         # Note n_heads * val_dim == embedding_dim so input to project_out is embedding_dim
-        self.project_out = nn.Linear(embedding_dim, embedding_dim, bias=False).to(device)
+        self.project_out = nn.Linear(
+            embedding_dim, embedding_dim, bias=False).to(device)
 
     def embed(self, static):
         # encoder
@@ -106,39 +111,44 @@ class AttentionModel(nn.Module):
         # [b_s, 1, emb_dim]
         # context = self._get_parallel_step_context(fixed.node_embeddings, state).view(-1, self.embedding_dim, 2)
         query = fixed.context_node_projected + \
-                self.project_step_context(self._get_parallel_step_context(fixed.node_embeddings, state))
+            self.project_step_context(
+                self._get_parallel_step_context(fixed.node_embeddings, state))
         # print('state', str(state.cur_loc.shape), str(state.cur_load.shape))
         # Compute keys and values for the nodes
         glimpse_K, glimpse_V, logit_K = fixed.glimpse_key, fixed.glimpse_val, fixed.logit_key
-        
+
         mask = state.mask[:, None, :]
         # Compute logits (unnormalized log_p)
-        
-        log_p, glimpse = self._one_to_many_logits(query, glimpse_K, glimpse_V, logit_K, mask)
-        
+
+        log_p, glimpse = self._one_to_many_logits(
+            query, glimpse_K, glimpse_V, logit_K, mask)
+
         # print('log_p', log_p)
         # print('self.temp', self.temp)
         # print('log_p',torch.log_softmax(log_p / self.temp, dim=-1).shape)
-        
+
         if normalize:
             log_p = torch.log_softmax(log_p / self.temp, dim=-1)
         assert not torch.isnan(log_p).any()
-        action = self._select_node(log_p.exp()[:, 0, :], mask[:, 0, :].to(device))
+        action = self._select_node(
+            log_p.exp()[:, 0, :], mask[:, 0, :].to(device))
         return log_p, action
 
     def _one_to_many_logits(self, query, glimpse_K, glimpse_V, logit_K, mask):
         batch_size, num_steps, embed_dim = query.size()
         key_size = val_size = embed_dim // self.n_heads
         # Compute the glimpse, rearrange dimensions so the dimensions are (n_heads, batch_size, num_steps, 1, key_size)
-        glimpse_Q = query.view(batch_size, num_steps, self.n_heads, 1, key_size).permute(2, 0, 1, 3, 4)
+        glimpse_Q = query.view(batch_size, num_steps,
+                               self.n_heads, 1, key_size).permute(2, 0, 1, 3, 4)
 
         # Batch matrix multiplication to compute compatibilities (n_heads, batch_size, num_steps, graph_size)
-        compatibility = torch.matmul(glimpse_Q, glimpse_K.transpose(-2, -1)) / math.sqrt(glimpse_Q.size(-1))
+        compatibility = torch.matmul(
+            glimpse_Q, glimpse_K.transpose(-2, -1)) / math.sqrt(glimpse_Q.size(-1))
         mask = mask.type(torch.bool)
-        
+
         # print('glimpse_K', glimpse_K[0])
         # print('glimpse_Q', glimpse_Q[0])
-        
+
         # mask_vehicle = mask_vehicle.type(torch.bool)
         # mask_demand = mask_demand.type(torch.bool)
         # print(mask.size())
@@ -150,10 +160,11 @@ class AttentionModel(nn.Module):
         # print('mask', mask)
         # print('maskNone', mask[None, :, :, None, :])
         # print('expandas', mask[None, :, :, None, :].expand_as(compatibility))
-        
+
         if self.mask_inner:
             assert self.mask_logits, "Cannot mask inner without masking logits"
-            compatibility[mask[None, :, :, None, :].expand_as(compatibility)] = -math.inf
+            compatibility[mask[None, :, :, None, :].expand_as(
+                compatibility)] = -math.inf
         # print(compatibility[0], "compatability after")
         # Batch matrix multiplication to compute heads (n_heads, batch_size, num_steps, val_size)
         heads = torch.matmul(torch.softmax(compatibility, dim=-1), glimpse_V)
@@ -167,7 +178,8 @@ class AttentionModel(nn.Module):
         final_Q = glimpse
         # Batch matrix multiplication to compute logits (batch_size, num_steps, graph_size)
         # logits = 'compatibility'
-        logits = torch.matmul(final_Q, logit_K.transpose(-2, -1)).squeeze(-2) / math.sqrt(final_Q.size(-1))
+        logits = torch.matmul(final_Q, logit_K.transpose(-2, -1)
+                              ).squeeze(-2) / math.sqrt(final_Q.size(-1))
 
         # print('logits.shape', logits.shape)
         # print('mask.shape', mask.shape)
@@ -175,7 +187,7 @@ class AttentionModel(nn.Module):
         # From the logits compute the probabilities by clipping, masking and softmax
         # print('logists', logits.shape)
         # print('mask', mask.shape)
-        
+
         if self.tanh_clipping > 0:
             logits = torch.tanh(logits) * self.tanh_clipping
         if self.mask_logits:
@@ -211,7 +223,8 @@ class AttentionModel(nn.Module):
         if mask is not None:
             log_p[mask] = 0
 
-        assert (log_p > -1000).data.all(), "Logprobs should not be -inf, check sampling procedure!"
+        assert (
+            log_p > -1000).data.all(), "Logprobs should not be -inf, check sampling procedure!"
 
         # Calculate log_likelihood
         return log_p.sum(1)
@@ -228,7 +241,8 @@ class AttentionModel(nn.Module):
 
         # The projection of the node embeddings for the attention is calculated once up front
         glimpse_key_fixed, glimpse_val_fixed, logit_key_fixed = \
-            self.project_node_embeddings(embeddings[:, None, :, :]).chunk(3, dim=-1)
+            self.project_node_embeddings(
+                embeddings[:, None, :, :]).chunk(3, dim=-1)
 
         # No need to rearrange key for logit as there is a single head
         fixed_attention_node_data = (
@@ -242,34 +256,37 @@ class AttentionModel(nn.Module):
         current_node = state.cur_loc
         # print('current_node.size()', current_node.size())
         batch_size, num_steps = current_node.size()
-        
+
         # print('embeddings:device', embeddings.device)
         # print('current_node:device', current_node.device)
         # print('cur_load:device', state.cur_load.device)
-        
+
         # print('current_node',current_node)
         # print('cur_load', state.cur_load.shape)
         # print('embeddings', embeddings.shape)
         # print('current_node.contiguous1', current_node.contiguous().shape)
         # print('cur_load1', state.cur_load.shape)
         # print('num_steps', num_steps)
-        # print('current_node.contiguous0', current_node.contiguous().view(batch_size, num_steps, 1).shape)        
-        
+        # print('current_node.contiguous0', current_node.contiguous().view(batch_size, num_steps, 1).shape)
+
         # print('current_node.contiguous', current_node.contiguous().view(batch_size, num_steps, 1)
         #             .expand(batch_size, num_steps, embeddings.size(-1)).shape)
         # print('cur_load', state.cur_load[:, None].to(device).shape)
-        
+
         # print('dtype', current_node.contiguous().view(batch_size, num_steps, 1).dtype)
-        # print('hello', 
-        #         torch.gather(
-        #             embeddings,
-        #             1,
-        #             current_node.contiguous()
-        #             .view(batch_size, num_steps, 1)
-        #             .expand(batch_size, num_steps, embeddings.size(-1))
-        #         ).view(batch_size, num_steps, embeddings.size(-1)).to(device).shape
-        # )
-            
+        # print('hello',
+        #       torch.gather(
+        #           embeddings,
+        #           1,
+        #           current_node.contiguous()
+        #           .view(batch_size, num_steps, 1)
+        #           .expand(batch_size, num_steps, embeddings.size(-1))
+        #       ).view(batch_size, num_steps, embeddings.size(-1)).to(device).shape
+        #       )
+
+        # print('a', state.cur_load[:, None].to(device).shape)
+        # print('b', state.time[:, None].to(device).shape)
+        # print('b', state.time[:, None].to(device))
         return torch.cat(
             (
                 torch.gather(
@@ -279,12 +296,11 @@ class AttentionModel(nn.Module):
                     .view(batch_size, num_steps, 1)
                     .expand(batch_size, num_steps, embeddings.size(-1))
                 ).view(batch_size, num_steps, embeddings.size(-1)),
-                state.cur_load[:, None].to(device)
+                state.cur_load[:, None].to(device),
+                state.time.unsqueeze(1).unsqueeze(1).to(device)
             ),
             -1
         )
-
-
 
     def _make_heads(self, v, num_steps=None):
         assert num_steps is None or v.size(1) == 1 or v.size(1) == num_steps
@@ -292,7 +308,8 @@ class AttentionModel(nn.Module):
         return (
             v.contiguous().view(v.size(0), v.size(1), v.size(2), self.n_heads, -1)
             .expand(v.size(0), v.size(1) if num_steps is None else num_steps, v.size(2), self.n_heads, -1)
-            .permute(3, 0, 1, 2, 4)  # (n_heads, batch_size, num_steps, graph_size, head_dim)
+            # (n_heads, batch_size, num_steps, graph_size, head_dim)
+            .permute(3, 0, 1, 2, 4)
         )
 
     def set_decode_type(self, decode_type, temp=None):

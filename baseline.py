@@ -142,10 +142,10 @@ class RolloutBaseline(object):
             assert t < 0, "T-statistic should be negative"
             print("p-value: {}".format(p_val))
             if p_val < self.args['bl_alpha']:
-                
-                if epoch % 3 == 0 or epoch > 2:
-                    print('Update baseline')
-                    test_success = True
+                test_success = True
+                # if epoch % 3 == 0 or epoch > 0:
+                #     print('Update baseline')
+                    
         return test_success, candidate_mean
     def state_dict(self):
         return {

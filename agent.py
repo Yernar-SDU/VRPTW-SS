@@ -26,26 +26,28 @@ device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cp
 
 class State(object):
 
-    def __init__(self, mask, cur_loc, cur_load, demand):
+    def __init__(self, mask, cur_loc, cur_load, demand, time):
         self.demand = demand
         self.mask = mask
         self.cur_load = cur_load.to(device)
         self.cur_loc = cur_loc.to(device)
+        self.time = time
 
     def __getitem__(self, item):
         return {
             'mask': self.mask[item],
             'cur_loc': self.cur_loc[item],
             'cur_load': self.cur_load[item],
-            'demand': self.demand[item]
+            'demand': self.demand[item],
+            'time': self.time[item]
         }
 
-    def update(self, mask, cur_loc, cur_load, demand):
+    def update(self, mask, cur_loc, cur_load, demand, time):
         self.demand = demand
         self.mask = mask
         self.cur_load = cur_load.to(device)
         self.cur_loc = cur_loc.to(device)
-        
+        self.time = time
 
     def update_mask(self ,idx):
         
@@ -109,7 +111,7 @@ class A2CAgent(object):
             baseline_data = baseline.wrap_dataset(train_data)
             # compute for each batch the rollout
             # train each batch
-            # train_rewards = []
+            batch_rewards = []
             for batch in range(args['n_batch']):
                 print("batch: ", batch)
                 print("epoch: ", epoch)
@@ -117,7 +119,7 @@ class A2CAgent(object):
                 data, bl_val = baseline.unwrap_batch(baseline_data[batch])
                 bl_val = move_to(bl_val, device) if bl_val is not None else None
                 R, logs, actions = self.rollout_train(data)
-                # train_rewards.append(R.mean())
+                batch_rewards.append(R.mean().cpu())
                 # Calculate loss
                 adv = (R - bl_val).to(device)
                 # print('R', R)
@@ -134,7 +136,7 @@ class A2CAgent(object):
                 self.optimizer.step()
             epoch_duration = time.time() - start_time
             print("Finished epoch {}, took {} s".format(epoch, time.strftime('%H:%M:%S', time.gmtime(epoch_duration))))
-            
+            train_rewards.append(np.mean(batch_rewards))
             # avg_reward = torch.mean(self.rollout_test(self.test_data[0], self.model).to(torch.float32))
             # print("average test reward: ", avg_reward)
             # reward_epoch[epoch] = avg_reward
@@ -165,11 +167,11 @@ class A2CAgent(object):
             #         os.path.join(args['save_path'], 'best_model.pt')
                 # )
                 
-            test_success, train_reward = baseline.epoch_callback(self.model, epoch, self.test_data)
-            train_rewards.append(train_reward)
+            test_success, test_reward = baseline.epoch_callback(self.model, epoch, self.test_data)
+            test_rewards.append(test_reward)
             if test_success:
-                # self.test_data = self.dataGen.get_test_next()
-                baseline._update_model(model, epoch, self.test_data)
+                self.test_data = self.dataGen.get_test_next()
+                baseline._update_model(self.model, epoch, self.test_data)
                 torch.save(
                     {
                         'model': self.model.state_dict(),
@@ -181,14 +183,14 @@ class A2CAgent(object):
                     os.path.join(args['save_path'], 'best_model.pt')
                     )
             # test_rewards.append(avg_reward.cpu().numpy())
-            np.savetxt(args['save_path']+"/test_rewards.txt", train_rewards)
+            np.savetxt(args['save_path']+"/test_rewards.txt", test_rewards)
             # np.savetxt("trained_models/losses.txt", losses)
             # lr_scheduler should be called at end of epoch
             # self.lr_scheduler.step()
             # ratio = reward_epoch/total_demand_epoch
             
-            plt.plot(torch.arange(len(train_rewards)), train_rewards)
-            plt.savefig(os.path.join('plots', f'train_rewards-{self.env.n_nodes}.png'))
+            # plt.plot(torch.arange(len(train_rewards)), train_rewards)
+            # plt.savefig(os.path.join('plots', f'train_rewards-{self.env.n_nodes}.png'))
             
             
             plt.plot(torch.arange(len(test_rewards)), test_rewards)
@@ -207,7 +209,7 @@ class A2CAgent(object):
         data = copy.deepcopy(data)
 
         print('train data', data.shape)
-        data, masks, cur_locs, cur_loads, demand = env.reset(data)
+        data, masks, cur_locs, cur_loads, demand, time = env.reset(data)
         
         data = move_to(data, device)
         
@@ -215,7 +217,7 @@ class A2CAgent(object):
         
         for vehicle in range(env.vehicle_num):
             state = State(masks[:, vehicle], cur_locs[:, vehicle], 
-                          cur_loads[:, vehicle], demand)
+                          cur_loads[:, vehicle], demand, time)
             vehicle_states.append(state) 
         
         embeddings, fixed = model.embed(data)
@@ -248,13 +250,13 @@ class A2CAgent(object):
                 
             time_step += 1
                 
-            data, mask, cur_locs, cur_loads, demand, finished = env.step(indexes)
+            data, mask, cur_locs, cur_loads, demand, time, finished = env.step(indexes)
             if finished:
                 break
             
             data = move_to(data, device)
             for vehicle in range(env.vehicle_num):    
-                vehicle_states[vehicle].update(mask[:, vehicle], cur_locs[:, vehicle], cur_loads[:, vehicle], demand)
+                vehicle_states[vehicle].update(mask[:, vehicle], cur_locs[:, vehicle], cur_loads[:, vehicle], demand, time)
             # embeddings, fixed = model.embed(data)
              
         # print("{}: {}".format("state update", state[0]))
@@ -276,14 +278,14 @@ class A2CAgent(object):
         set_decode_type(self.model, "greedy")
         
         print('test data', data_o.shape)
-        data, masks, cur_locs, cur_loads, demand = env.reset(data_o)
+        data, masks, cur_locs, cur_loads, demand, time = env.reset(data_o)
         data = move_to(data, device)
         vehicle_states = []
         
 
         for vehicle in range(env.vehicle_num):
             state = State(masks[:, vehicle], cur_locs[:, vehicle], 
-                          cur_loads[:, vehicle], demand)
+                          cur_loads[:, vehicle], demand, time)
             vehicle_states.append(state) 
         
         embeddings, fixed = model.embed(data)
@@ -313,17 +315,14 @@ class A2CAgent(object):
                     vehicle_states[vehicle].update_mask(idx)
                 
 
-                time_step += 1
-            # indexes = torch.tensor(indexes)
-            data, mask, cur_locs, cur_loads, demand, finished = env.step(indexes)
+            data, mask, cur_locs, cur_loads, demand, time, finished = env.step(indexes)
             if finished:
                 break
             data = move_to(data, device)
             for vehicle in range(env.vehicle_num):    
-                vehicle_states[vehicle].update(mask[:, vehicle], cur_locs[:, vehicle], cur_loads[:, vehicle], demand)
-            # embeddings, fixed = model.embed(data)
-            if (time_step == 3):
-                sys.exit()                 
+                vehicle_states[vehicle].update(mask[:, vehicle], cur_locs[:, vehicle], cur_loads[:, vehicle], demand, time)
+
+            time_step += 1
             
             
             

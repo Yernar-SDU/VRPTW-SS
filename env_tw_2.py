@@ -203,6 +203,7 @@ class Env(object):
         
         self.dist_mat = torch.zeros(self.batch_size, self.n_nodes+1,
                                     self.n_nodes+1, dtype=torch.float)
+        self.demand_not_zero_mask = (self.demand.sum(dim=1) != 0)
 
 
         # print('self.dist_mat.shape', self.dist_mat.shape)
@@ -223,7 +224,7 @@ class Env(object):
         self.R = torch.zeros(self.batch_size, dtype=torch.float)
         
         
-        return data, self.mask, self.cur_locs, self.cur_loads, self.demand 
+        return data, self.mask, self.cur_locs, self.cur_loads, self.demand, self.cur_time 
         # return self.state_v, self.state_d, self.mask_vehicle, self.mask_drone
     
     
@@ -243,11 +244,11 @@ class Env(object):
         finished = False
         
         new_locs = torch.stack(idxs, dim=1).unsqueeze(-1)
-        print('------------------STARTING------------')
-        print('cur_locs', self.cur_locs)
-        print('new_locs', new_locs)
-        print('self.cur_loads', self.cur_loads)
-        print('demand', self.demand)
+        # print('------------------STARTING------------')
+        # print('cur_locs', self.cur_locs)
+        # print('new_locs', new_locs)
+        # print('self.cur_loads', self.cur_loads)
+        # print('demand', self.demand)
         # Create a mask for changed locations
         changed_mask = self.cur_locs != new_locs
         
@@ -256,20 +257,59 @@ class Env(object):
         
         estimated_time = self.dist_mat[torch.arange(self.batch_size)[:, None, None], self.cur_locs, new_locs] / self.speed
         
-        self.left_time[changed_indices.bool()] = (estimated_time[changed_indices.bool()] + 10)
+        self.left_time[changed_indices.bool()] = (estimated_time[changed_indices.bool()]+ 10)
         
-        print('left_time', self.left_time)  
+        # Check if new_locs and cur_locs are equal and left_time is zero
+        mask = (new_locs == self.cur_locs) & (self.left_time == 0)
+        
+        # If the conditions are met, add 10 to the corresponding elements in left_time
+        self.left_time[mask] += 10
+        
+        
+        if(self.vehicle_num > 1):
+            # Check if left_time values are equal within the same batch
+            mask_equal = (self.left_time[:, 0] == self.left_time[:, 1])
+            
+            # Identify the indices where values are equal
+            equal_indices = torch.nonzero(mask_equal, as_tuple=False)
+            
+            # Add a small amount (0.001) to one of the equal values
+         
+            if len(equal_indices) > 0:
+                # print('equal_indices', equal_indices)
+                # print('mask_equal', mask_equal)
+                # print('left_time', self.left_time[equal_indices[0]])
+                # print('left_time', self.left_time[equal_indices[0], 0])
+                
+                # print('left_time', self.left_time[equal_indices[0, 0], 0, equal_indices[0, 1]])
+                self.left_time[equal_indices[0, 0], 0, equal_indices[0, 1]] += 0.01
+                
+        
+        # print('left_time', self.left_time)  
         min_arrival_time, _ = torch.min(self.left_time, dim=1, keepdim=True)
-        print('min_arrival_time', min_arrival_time)
+        # print('min_arrival_time', min_arrival_time)
         self.cur_time += min_arrival_time.squeeze(2).squeeze(1)
         
+        
+        
+        
+        
+        
         self.left_time -= min_arrival_time
-        print('self.left_time', self.left_time)
+        # print('self.left_time', self.left_time)
+        
+        # print('left_time', self.left_time)
+        
         
         served_vehicles = self.left_time == 0
+        # print('served_vehicles', served_vehicles)
+        # print('new_locs', new_locs)
         served_indexes= new_locs[served_vehicles]
+        # print('served_indexes', served_indexes)
         served_demands = self.demand[torch.arange(self.demand.size(0)), served_indexes]
+        # print('served_demands', served_demands)
         self.cur_loads[served_vehicles] = self.cur_loads[served_vehicles] - served_demands
+        # print('cur_loads', self.cur_loads)
         self.demand[torch.arange(self.demand.size(0)), served_indexes] = 0
            
         # Vectorized version
@@ -289,7 +329,7 @@ class Env(object):
                     
                     if torch.all(self.mask[batch,vehicle] == 1):
                         self.mask[batch,vehicle, 0] = 0
-                print('mask', self.mask[batch, vehicle])
+                # print('mask', self.mask[batch, vehicle])
 
         self.cur_locs = new_locs
         # Identify indices where self.cur_locs is 0 (depot)
@@ -307,16 +347,31 @@ class Env(object):
         late_penalty = torch.clamp(self.cur_time - late_time_values, min=0)
         early_penalty = torch.clamp(early_time_values - self.cur_time, min=0)
 
-        print('late_penalty', late_penalty)
-        print('early_penalty', early_penalty)
+        # print('late_penalty', late_penalty)
+        # print('early_penalty', early_penalty)
         
-        print('cur_time', self.cur_time)
-        self.R += (early_penalty * self.early_coef) + (late_penalty * self.late_coef)
-        self.R += min_arrival_time.squeeze(2).squeeze(1)
-        print('self.R', self.R)
-        print('------------------ENDINGG------------')
+        
+        # print('demand_not_zero_mask', self.demand_not_zero_mask)
+                      
+        # Vectorized calculation of the reward for relevant batches
+        self.R[self.demand_not_zero_mask.squeeze()] += (early_penalty[self.demand_not_zero_mask.squeeze()] * self.early_coef +
+                                                   late_penalty[self.demand_not_zero_mask.squeeze()] * self.late_coef)
+        
+        # Ensure min_arrival_time has the correct shape for broadcasting
+        min_arrival_time_broadcasted = min_arrival_time[self.demand_not_zero_mask.squeeze()].unsqueeze(1)
+        
+        # Add min_arrival_time to self.R using the boolean mask
+        self.R[self.demand_not_zero_mask.squeeze()] += min_arrival_time_broadcasted.squeeze()
+        # Calculate the reward only for the relevant batches
+        
+        # self.R += (early_penalty * self.early_coef + late_penalty * self.late_coef) * demand_not_zero_mask.squeeze(1)
+        # self.R += min_arrival_time * demand_not_zero_mask.squeeze(1)
+        # print('self.R', self.R)
+        # print('------------------ENDINGG------------')
+        # print('cur_time', self.cur_time)
+        self.demand_not_zero_mask = (self.demand.sum(dim=1) != 0)
         
         if torch.all(self.demand == 0):
             finished = True                
-        return self.data, self.mask, self.cur_locs, self.cur_loads, self.demand, finished 
+        return self.data, self.mask, self.cur_locs, self.cur_loads, self.demand, self.cur_time, finished 
       
